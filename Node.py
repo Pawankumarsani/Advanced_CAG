@@ -2,8 +2,6 @@ import os
 import time
 import faiss
 from typing import TypedDict, List, Optional
-from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.documents import Document
 from langchain_groq import ChatGroq
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -54,7 +52,7 @@ QA_CACHE = FAISS(
 
 #=============RAG STORE=============#
 RAG_STORE=FAISS.from_texts(
-    text = [
+    texts = [
         "LangGraph lets you compose stateful LLM workflows as graphs.",
         "In LangGraph, nodes can be cached; node caching memoizes outputs keyed by inputs for a TTL.",
         "Retrieval-Augmented Generation (RAG) retrieves external context and injects it into prompts.",
@@ -111,3 +109,34 @@ def retrieve(state: RAGState) -> RAGState:
     state["context_docs"] = docs
     return state
 
+def generate(state: RAGState) -> RAGState:
+    q = state["question"]
+    docs = state.get("context_docs", [])
+    ctx="\n\n".join(f"[doc-{i}] {d.page_content}" for i,d in enumerate(docs, start=1))
+    
+    system = (
+        "You are a precise RAG assistant. Use the context when helpful. "
+        "Cite with [doc-i] markers if you use a fact from the context."
+    )
+    user = f"Question: {q}\n\nContext:\n{ctx}\n\nWrite a concise answer with citations."
+    
+    resp = LLM.invoke([{"role": "system", "content": system},
+                       {"role": "user", "content": user}])
+    state["answer"] = resp.content
+    state["citations"] = [f"[doc-{i}]" for i in range(1, len(docs) + 1)]
+    return state
+
+def cache_write(state: RAGState) -> RAGState:
+    q = state["normalized_question"]
+    a = state.get("answer")
+    if not q or not a:
+        return state
+
+    QA_CACHE.add_texts(
+        texts=[q],
+        metadatas=[{
+            "answer": a,
+            "ts": time.time(),
+        }]
+    )
+    return state
